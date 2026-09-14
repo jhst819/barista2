@@ -141,7 +141,7 @@
    비워 두면 이 태블릿에서만 쓰는 '혼자 모드'로 작동합니다.
    주소 없이 시험만 해 보시려면 페이지 주소 뒤에 ?sync=주소 를 붙여도 됩니다.
    ══════════════════════════════════════════════════════════════════════ */
-var SYNC_URL = "https://script.google.com/macros/s/AKfycbyJTU-lT8fpCJsDg7JPdzhZ3h41ksuOF1q78ubRqX2PTptvNvLQeSV00-e3K6Kbx7TMOw/exec";
+var SYNC_URL = "https://script.google.com/macros/s/AKfycbxOXKrXHfVCjKrexFGLTgYDLbUVvWkKUn6Ka-BlqwSsDUzPMabKZ2IxOp2pITPNZ2Mf0w/exec";
 
 /* ══════════════════════════════════════════════════════════════════════
    [1] 레시피 — 실제 실습 절차에 맞게 이 부분만 고치시면 됩니다.
@@ -203,6 +203,7 @@ var SYNC = (new URLSearchParams(location.search).get("sync") || SYNC_URL || "").
 var MODE = "solo";               /* cloud | shared | solo */
 var online = false, netErr = "";
 var station=null, tab="cup", making=null, overlay=false, sound=true, msg=null, busy=false;
+var loaded=false, inflight=false, syncing=false;
 var steps = {};                  /* 지금 몇 번째 단계인지 (기기별) */
 var S = { level:1, help:0, cups:[] };
 
@@ -360,8 +361,16 @@ async function callServer(qs){
   return d;
 }
 function applyServer(d){
-  var cups = parseRows(d.rows).cups;
   var prog = d.progress || {};
+  if(!d.rows){                       /* 가벼운 응답: 진행 상황만 갱신 */
+    S.cups.forEach(function(c){
+      var p=prog[c.id];
+      c.shot=!!(p&&p.shot); c.cupPrep=!!(p&&p.cupPrep);
+      c.finish=!!(p&&p.finish); c.ship=!!(p&&p.ship); c.t=(p&&p.t)||{};
+    });
+    S.level=d.level||S.level; S.help=d.help||S.help; loaded=true; return;
+  }
+  var cups = parseRows(d.rows).cups;
   cups.forEach(function(c){
     var p = prog[c.id];
     if(p){ c.shot=!!p.shot; c.cupPrep=!!p.cupPrep; c.finish=!!p.finish; c.ship=!!p.ship; c.t=p.t||{}; }
@@ -369,10 +378,14 @@ function applyServer(d){
   S.cups = cups;
   S.level = d.level || 1;
   S.help  = d.help  || 0;
+  loaded = true;
 }
 async function server(qs){
+  if(inflight) return;
+  inflight=true; syncing=true;
   try{ applyServer(await callServer(qs||"action=sync")); online=true; netErr=""; }
   catch(e){ online=false; netErr=(e&&e.message)?e.message:String(e); }
+  finally{ inflight=false; syncing=false; }
 }
 async function sharedPull(){
   try{ var r=await window.storage.get(KEY,true);
@@ -390,7 +403,7 @@ async function local(fn){
   render();
 }
 async function detectMode(){
-  if(SYNC){ MODE="cloud"; await server("action=sync"); return; }
+  if(SYNC){ MODE="cloud"; render(); await server("action=sync"); render(); return; }
   try{
     if(!window.storage) throw new Error("이 페이지에서는 공유 저장소를 쓸 수 없습니다");
     await window.storage.set(KEY+":probe", String(Date.now()), true);
@@ -403,16 +416,28 @@ async function detectMode(){
 
 /* 동작 — 모드에 관계없이 같은 함수를 씁니다 */
 async function markCups(ids, field){
-  if(busy) return; busy=true;
   if(MODE==="cloud"){
-    await server("action=mark&id="+encodeURIComponent(ids.join(","))+"&f="+field);
+    /* 먼저 화면에 반영해 학생이 기다리지 않게 하고, 서버에는 뒤이어 알립니다 */
+    S.cups.forEach(function(c){
+      if(ids.indexOf(c.id)>=0){ c[field]=true; c.t=c.t||{}; c.t[field]=now(); } });
+    render();
+    var q = "action=mark&id="+encodeURIComponent(ids.join(","))+"&f="+field+"&light=1";
+    var url = SYNC + (SYNC.indexOf("?")>=0?"&":"?") + q + "&_=" + Date.now();
+    try{
+      var res = await fetch(url,{method:"GET",redirect:"follow",cache:"no-store"});
+      if(!res.ok) throw new Error("서버 응답 "+res.status);
+      var d = await res.json();
+      if(d.error) throw new Error(d.error);
+      applyServer(d); online=true; netErr="";
+    }catch(e){
+      online=false; netErr=(e&&e.message)?e.message:String(e);
+    }
     render();
   }else{
     await local(function(){
       S.cups.forEach(function(c){ if(ids.indexOf(c.id)>=0){ c[field]=true; c.t=c.t||{}; c.t[field]=now(); } });
     });
   }
-  busy=false;
 }
 async function bumpHelp(){
   if(MODE==="cloud"){ await server("action=help"); render(); }
@@ -500,7 +525,7 @@ function card(c,cls,flag){
 function emptyBox(big,p){ return '<div class="empty"><div class="big">'+big+'</div><p>'+p+'</p></div>'; }
 
 function banner(){
-  if(MODE==="cloud" && !online)
+  if(MODE==="cloud" && !online && loaded)
     return '<div class="banner">시트와 연결되지 않았습니다. 이 태블릿에서만 보입니다. (선생님 화면에서 원인 확인)</div>';
   if(MODE==="solo")
     return '<div class="banner">혼자 모드입니다. 이 태블릿에서만 기록되며, 수업 진행에는 지장이 없습니다.</div>';
@@ -639,13 +664,13 @@ function render(){
     var l1=waitShot();
     body='<div class="wrap">'+(l1.length
       ? '<div class="grid">'+l1.map(function(c){return card(c,"",c.cupPrep?{s:"컵 준비가 끝났어요",ok:true}:null);}).join("")+'</div>'
-      : emptyBox("샷을 다 내렸습니다.","새 주문이 들어오면 여기에 나타납니다."))+'</div>';
+      : emptyBox(loaded?"샷을 다 내렸습니다.":"주문을 불러오는 중입니다.", loaded?"새 주문이 들어오면 여기에 나타납니다.":"잠시만 기다려 주세요."))+'</div>';
   }
   else if(tab==="cup"){
     var l2=waitCup();
     body='<div class="wrap">'+(l2.length
       ? '<div class="grid">'+l2.map(function(c){return card(c,"",c.shot?{s:"샷이 준비됐어요",ok:true}:null);}).join("")+'</div>'
-      : emptyBox("컵을 다 준비했습니다.","‘완성하기’ 칸을 확인해 주세요."))+'</div>';
+      : emptyBox(loaded?"컵을 다 준비했습니다.":"주문을 불러오는 중입니다.", loaded?"‘완성하기’ 칸을 확인해 주세요.":"잠시만 기다려 주세요."))+'</div>';
   }
   else if(tab==="fin"){
     var l3=waitFinish();
@@ -732,10 +757,11 @@ setInterval(async function(){
   if(!station || busy) return;
   var el=document.activeElement;
   if(el && (el.tagName==="INPUT"||el.tagName==="TEXTAREA")) return;
-  if(MODE==="cloud"){ await server("action=sync"); render(); }
+  if(MODE==="cloud"){ if(inflight) return; await server("action=sync"); render(); }
   else if(MODE==="shared"){ if(await sharedPull()) render(); }
-}, 5000);
+}, 6000);
 
+render();
 (async function(){ await detectMode(); render(); })();
 </script>
 </html>
