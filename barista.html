@@ -49,6 +49,7 @@
   .tag.h{background:var(--hot);color:#fff}
   .tag.i{background:var(--ice);color:#fff}
   .tag.mycup{background:#2E7D4F;color:#fff}
+  .tag.reuse{background:#4A6FA5;color:#fff}
   .tag.time{background:#E7E5DE;color:var(--ink)}
   .tag.time.urg{background:var(--urg);color:#fff}
   .who{margin-top:9px;font-size:19px;color:var(--muted);font-weight:600}
@@ -330,14 +331,18 @@ function parseRows(rows){
     var place=placeName(g(ix.place));
     var note=g(ix.note).trim();
     var timeRaw=g(ix.time).trim();
-    var mycup=/개인|텀블러|머그|내컵|다회용|리유저블/.test(g(ix.cup).replace(/\s/g,""));
+    var cupRaw=g(ix.cup).replace(/\s/g,"");
+    var mycup=/개인|텀블러|머그|내컵/.test(cupRaw);          /* 선생님이 가져다주신 컵 */
+    var reuse=!mycup && /다회용|리유저블/.test(cupRaw);       /* 학교에 비치된 다회용컵 */
+    var cupType = mycup ? "개인컵" : (reuse ? "다회용컵" : "");
     var qty = ix.qty>=0 ? parseInt(g(ix.qty).replace(/[^0-9]/g,""),10) : 1;
     if(!qty||qty<1) qty=1; if(qty>20) qty=20;
     for(var i=0;i<qty;i++){
-      var sig=[name,place,key,mycup?"M":"D",timeRaw].join("|");
+      var sig=[name,place,key,mycup?"M":(reuse?"R":"D"),timeRaw].join("|");
       seen[sig]=(seen[sig]||0)+1;
       cups.push({ id:hash(sig)+seen[sig], name:name, place:place, menuKey:key, note:note,
-                  mycup:mycup, timeRaw:timeRaw, timeMin:parseTime(timeRaw),
+                  mycup:mycup, reuse:reuse, cupType:cupType,
+                  timeRaw:timeRaw, timeMin:parseTime(timeRaw),
                   shot:false, cupPrep:false, finish:false, ship:false, t:{} });
     }
   });
@@ -505,6 +510,7 @@ function tags(c){
   var m=MENUS[c.menuKey];
   var h='<span class="tag '+(m.temp==="HOT"?"h":"i")+'">'+m.temp+'</span>';
   if(c.mycup) h+='<span class="tag mycup">개인컵</span>';
+  else if(c.reuse) h+='<span class="tag reuse">다회용컵</span>';
   if(c.timeRaw){
     var lab = (c.timeMin!=null && c.timeRaw.length>8)
       ? String(Math.floor(c.timeMin/60)).padStart(2,"0")+":"+String(c.timeMin%60).padStart(2,"0")
@@ -556,7 +562,12 @@ function stepsFor(c){
     var mid = (S.level==1) ? SHOT_FULL : SHOT_SHORT;
     return (van?VAN_PRE:[]).concat(mid, van?VAN_POST:[], [DELIVER]);
   }
-  if(tab==="cup") return (c.mycup?[MYCUP_STEP]:[]).concat(m.cup);
+  if(tab==="cup"){
+    var base=m.cup.slice();
+    if(c.mycup) base[0]=MYCUP_STEP;
+    else if(c.reuse) base[0]="다회용컵을 준비해요";
+    return base;
+  }
   return m.finish;
 }
 function makeView(c){
@@ -592,7 +603,7 @@ function shipView(){
       +(t?'<span class="tag time">'+esc(t)+'</span>':'')+'</h3>'
       +'<ul class="cups">'+by[p].map(function(c){ var m=MENUS[c.menuKey];
           return '<li>'+esc(c.name)+' — '+esc(m.name)+' <b>'+m.temp+'</b>'
-            +(c.mycup?" · 개인컵":"")+(c.note?" · "+esc(c.note):"")+'</li>'; }).join("")+'</ul>'
+            +(c.cupType?" · "+c.cupType:"")+(c.note?" · "+esc(c.note):"")+'</li>'; }).join("")+'</ul>'
       +'<button class="btn ship" data-ship="'+esc(p)+'">'+esc(p)+' 배달 완료 ('+by[p].length+'잔)</button></div>';
   }).join("");
 }
@@ -617,7 +628,7 @@ function teacherView(){
       +'<div class="row"><button class="sbtn" data-act="paste">불러오기</button></div></div>')
 
   +'<div class="panel"><h3>개인컵 받아올 곳</h3>'
-    +'<p>수업 시작 전에 먼저 모아 오면 만드는 도중 흐름이 끊기지 않습니다.</p>'
+    +'<p>선생님들이 직접 가져다주신 개인컵만 모았습니다. 학교 다회용컵은 여기에 포함되지 않습니다.</p>'
     +(mycups.length?'<ul class="cups">'+mycups.map(function(c){
         return '<li>'+esc(c.place)+' · '+esc(c.name)+' — '+esc(MENUS[c.menuKey].name)+' '+MENUS[c.menuKey].temp+'</li>';
       }).join("")+'</ul>':'<p style="margin:0">개인컵 주문이 없습니다.</p>')+'</div>'
@@ -738,7 +749,7 @@ root.addEventListener("click", async function(e){
   if(act==="copy"){
     var rows=[["메뉴","온도","컵","받는 분","장소","희망시간","샷","컵준비","완성","배달"].join("\t")];
     S.cups.slice().sort(byTime).forEach(function(c){ var m=MENUS[c.menuKey];
-      rows.push([m.name,m.temp,c.mycup?"개인컵":"일회용",c.name,c.place,c.timeRaw||"",
+      rows.push([m.name,m.temp,c.cupType||"일회용컵",c.name,c.place,c.timeRaw||"",
         hhmm(c.t&&c.t.shot),hhmm(c.t&&c.t.cupPrep),hhmm(c.t&&c.t.finish),hhmm(c.t&&c.t.ship)].join("\t")); });
     var ta=document.createElement("textarea"); ta.value=rows.join("\n");
     document.body.appendChild(ta); ta.select();
